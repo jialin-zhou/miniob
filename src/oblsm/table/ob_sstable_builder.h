@@ -52,16 +52,25 @@ public:
 
 private:
   void finish_build_block();
+  void write_metadata();
 
   const ObComparator      *comparator_ = nullptr;
   ObBlockBuilder           block_builder_;
   string                   curr_blk_first_key_;
   unique_ptr<ObFileWriter> file_writer_;
   vector<BlockMeta>        block_metas_;
+  // 表示当前 block 在文件中的写入位置
+  // 可能也可以表示当前 sstable 的偏移量？
+  // sstable 中存五种东西：block_i（4KB），meta size(n)，block_meta_i_size，block_meta_i，指向meta size的footer
   uint32_t                 curr_offset_ = 0;
   uint32_t                 sst_id_      = 0;
   size_t                   file_size_   = 0;
 
   ObLRUCache<uint64_t, shared_ptr<ObBlock>> *block_cache_ = nullptr;
+
+  // 表示一个block的大小
+  static const uint32_t BLOCK_SIZE = 4 * 1024;  // 4KB
+
+  uint32_t metadata_start_offset_ = 0;
 };
 }  // namespace oceanbase
