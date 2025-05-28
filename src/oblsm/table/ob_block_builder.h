@@ -35,12 +35,15 @@ public:
   uint32_t appro_size() { return data_.size() + offsets_.size() * sizeof(uint32_t); }
 
 private:
+  // 表示一个block的大小
   static const uint32_t BLOCK_SIZE = 4 * 1024;  // 4KB
   // Offsets of key-value pairs.
+  // 一个vector<uint32_t> 表示当前对象的offset
   vector<uint32_t> offsets_;
   // key-value pairs
   // TODO: use block as data container
   // TODO: add checksum
+  // 一个string 表示当前对象的data
   string data_;
 
   // string first_key_;
