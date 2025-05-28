@@ -18,6 +18,26 @@ See the Mulan PSL v2 for more details. */
 #include "oblsm/util/ob_lru_cache.h"
 
 namespace oceanbase {
+
+//  总计  4KB，一个block块
+//     4字节    |  key |    4字节  |  val
+// ┌─────────────────────────────────────┐
+// │ key1_size | key1 | val1_size | val1 │ ← data_ 的前半段
+// ├─────────────────────────────────────┤
+// │ key2_size | key2 | val2_size | val2 │
+// ├─────────────────────────────────────┤
+// │ ...                                 │
+// ├─────────────────────────────────────┤
+// │         N = offset 数 （4字节）      │ 
+// │             offset_1 （4字节）       │
+// |              ...     （4字节）       |
+// |            offset_N  （4字节）       │ ← 这段从 finish() 追加上来的 offsets_
+// │  offset start (data_size) （4字节）  │ ← 用来定位 offset 区域的起点
+// └─────────────────────────────────────┘
+
+// BlockMeta(curr_blk_first_key_, last_key, curr_offset_, block_contents.size())
+// block meta 中有五种东西：first_key，last_key，block在文件中的偏移量，block的大小
+
 // TODO: add a dumptool to dump sst files(example for usage: ./dumptool sst_file)
 //    ┌─────────────────┐
 //    │    block 1      │◄──┐
@@ -71,7 +91,7 @@ public:
         file_name_(file_name),
         comparator_(comparator),
         file_reader_(nullptr),
-        block_cache_(block_cache)
+        block_cache_(block_cache) // 一个指针 指向缓存快
   {
     (void)block_cache_;
   }
@@ -90,6 +110,7 @@ public:
 
   uint32_t sst_id() const { return sst_id_; }
 
+  // 返回一个shared_ptr<ObSSTable> 指向当前对象
   shared_ptr<ObSSTable> get_shared_ptr() { return shared_from_this(); }
 
   ObLsmIterator *new_iterator();
