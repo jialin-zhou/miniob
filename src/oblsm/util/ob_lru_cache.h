@@ -12,6 +12,8 @@ See the Mulan PSL v2 for more details. */
 
 #include <stdint.h>
 #include <cstddef>
+#include <unordered_map>
+#include <mutex>
 
 namespace oceanbase {
 
@@ -35,7 +37,24 @@ public:
    *
    * @param capacity The maximum number of elements the cache can hold.
    */
-  ObLRUCache(size_t capacity) : capacity_(capacity) {}
+  ObLRUCache(size_t capacity) : capacity_(capacity), size_(0) {
+    head_ = new ObLinkNode();
+    tail_ = new ObLinkNode();
+    head_->next = tail_;
+    tail_->prev = head_;
+  }
+
+  /**
+   * @brief 析构函数，清理所有节点
+   */
+  ~ObLRUCache() {
+    ObLinkNode *node = head_;
+    while (node) {
+      ObLinkNode *next = node->next;
+      delete node;
+      node = next;
+    }
+  }
 
   /**
    * @brief Retrieves a value from the cache using the specified key.
@@ -48,7 +67,16 @@ public:
    * @param value A reference to store the value associated with the key.
    * @return `true` if the key is found and the value is retrieved; `false` otherwise.
    */
-  bool get(const KeyType &key, ValueType &value) { return false; }
+  bool get(const KeyType &key, ValueType &value) { 
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!map_.contains(key)) {
+      return false;
+    }
+    ObLinkNode *node = map_[key];
+    value = node->value_;
+    move_to_head(node);
+    return true; 
+  }
 
   /**
    * @brief Inserts a key-value pair into the cache.
@@ -60,7 +88,27 @@ public:
    * @param key The key to insert into the cache.
    * @param value The value to associate with the specified key.
    */
-  void put(const KeyType &key, const ValueType &value) {}
+  void put(const KeyType &key, const ValueType &value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!map_.contains(key)) {
+      ObLinkNode *node = new ObLinkNode(key, value);
+      map_[key] = node;
+      add_to_head(node);
+      size_++;
+      if (size_ > capacity_) {
+        ObLinkNode *last_node = remove_tail();
+        if (last_node != nullptr) {
+          map_.erase(last_node->key_);
+          delete last_node;
+          size_--;
+        }
+      }
+    }else {
+      ObLinkNode *node = map_[key];
+      node->value_ = value;
+      move_to_head(node);
+    }
+  }
 
   /**
    * @brief Checks whether the specified key exists in the cache.
@@ -68,13 +116,81 @@ public:
    * @param key The key to check in the cache.
    * @return `true` if the key exists; `false` otherwise.
    */
-  bool contains(const KeyType &key) const { return false; }
+  bool contains(const KeyType &key) const {
+    return map_.find(key) != map_.end();
+  }
 
 private:
   /**
-   * @brief The maximum number of elements the cache can hold.
+   * @brief 链表节点，按照操作时间连接节点
+   */  
+  struct ObLinkNode{
+    KeyType key_;
+    ValueType value_;
+    ObLinkNode *prev;
+    ObLinkNode *next;
+    ObLinkNode() : key_(), value_(), prev(nullptr), next(nullptr) {}
+    ObLinkNode(const KeyType &key, const ValueType &value)
+    : key_(key), value_(value), prev(nullptr), next(nullptr) {}
+  };
+
+  /**
+   * @brief The maximum number of elements the cache can hold. 可负载大小
    */
   size_t capacity_;
+  // 当前存储元素个数
+  size_t size_;
+  // 存储数据的哈希表
+  std::unordered_map<KeyType, ObLinkNode*> map_;
+  // 链表头结点
+  ObLinkNode *head_;
+  // 链表尾节点
+  ObLinkNode *tail_;
+  // 保证线程安全的锁
+  mutable std::mutex mutex_;
+
+  /**
+   * @brief 将指定节点移至链表开头。
+   *
+   * @param node 待移至链表开头的节点。
+   */
+  void move_to_head(ObLinkNode *node) {
+    node->prev->next = node->next;
+    node->next->prev = node->prev;
+
+    node->next = head_->next;
+    node->prev = head_;
+    head_->next->prev = node;
+    head_->next = node;
+  }
+
+  /**
+   * @brief 将指定节点添加链表开头。
+   *
+   * @param node 待添加链表开头的节点。
+   */
+  void add_to_head(ObLinkNode *node) {
+    node->next = head_->next;
+    node->prev = head_;
+    head_->next->prev = node;
+    head_->next = node;
+  }
+
+  /**
+   * @brief 移除最末尾的节点并返回
+   *
+   * @return 移除的最末尾的节点。
+   */
+  ObLinkNode *remove_tail() {
+    ObLinkNode *node = tail_->prev;
+    if (node == head_) {
+      return nullptr;
+    }
+    node->prev->next = node->next;
+    tail_->prev = node->prev;
+
+    return node;
+  }
 };
 
 /**
@@ -91,7 +207,7 @@ private:
 template <typename Key, typename Value>
 ObLRUCache<Key, Value> *new_lru_cache(uint32_t capacity)
 {
-  return nullptr;
+  return new ObLRUCache<Key, Value>(capacity);
 }
 
 }  // namespace oceanbase
