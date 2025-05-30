@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 //
 // Created by Meiyi & Longda on 2021/4/13.
 //
+#include <cstdio>
 #include <errno.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@ See the Mulan PSL v2 for more details. */
 #include "common/log/log.h"
 #include "common/math/crc.h"
 #include "storage/buffer/disk_buffer_pool.h"
+#include "common/sys/rc.h"
 #include "storage/buffer/buffer_pool_log.h"
 #include "storage/db/db.h"
 
@@ -309,6 +311,17 @@ RC DiskBufferPool::close_file()
 
   bp_manager_.close_file(file_name_.c_str());
   return RC::SUCCESS;
+}
+
+RC DiskBufferPool::remove_file()
+{
+  RC rc = bp_manager_.remove_file(file_name_.c_str());
+  LOG_INFO("DiskBufferPool remove the file %s, errcode is = %s", file_name_.c_str(), strrc(rc));
+  if(rc != RC::SUCCESS) {
+    LOG_TRACE("DiskBufferPool failed to remove the file %s, errcode is = %s", file_name_.c_str(), strrc(rc));
+    return rc;
+  }
+  return rc;
 }
 
 RC DiskBufferPool::get_this_page(PageNum page_num, Frame **frame)
@@ -887,6 +900,26 @@ RC BufferPoolManager::close_file(const char *_file_name)
   lock_.unlock();
 
   delete bp;
+  return RC::SUCCESS;
+}
+
+RC BufferPoolManager::remove_file(const char *file_name)
+{
+  RC rc = close_file(file_name);
+  if(rc != RC::SUCCESS) {
+    LOG_TRACE("BufferPoolManager failed to close the file %s, errcode is = %s", file_name, strrc(rc));
+    return rc;
+  }
+  ::remove(file_name);
+  auto iter = buffer_pools_.find(file_name);
+  if (iter == buffer_pools_.end()) {
+    LOG_TRACE("file has not opened: %s", file_name);
+  } else {
+    LOG_TRACE("Erasing file from buffer_pools: %s", file_name);
+    buffer_pools_.erase(iter);
+  }
+  
+  LOG_TRACE("RC BufferPoolManager::remove_file remove the file %s, errcode is = %s", file_name, strrc(rc));
   return RC::SUCCESS;
 }
 

@@ -61,6 +61,12 @@ public:
       StorageEngine storage_engine);
 
   /**
+   * 删除一个表
+   * @param path 元数据保存的文件(完整路径)
+   */
+  RC drop(const char *path);
+
+  /**
    * 打开一个表
    * @param meta_file 保存表元数据的文件完整路径
    * @param base_dir 表所在的文件夹，表记录数据文件、索引数据文件存放位置
@@ -130,6 +136,8 @@ private:
   TableMeta table_meta_;
   // DiskBufferPool    *data_buffer_pool_ = nullptr;  /// 数据文件关联的buffer pool
   // RecordFileHandler *record_handler_   = nullptr;  /// 记录操作
+
+  // indexes_;放到了engine中，通过存储引擎操作索引文件
   // vector<Index *>    indexes_;
   unique_ptr<TableEngine> engine_ = nullptr;
 };

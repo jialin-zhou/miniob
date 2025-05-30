@@ -12,6 +12,10 @@ See the Mulan PSL v2 for more details. */
 // Created by Meiyi & Wangyunlai on 2021/5/13.
 //
 
+#include <cerrno>
+#include <cstddef>
+#include <cstdio>
+#include <filesystem>
 #include <limits.h>
 #include <string.h>
 
@@ -25,6 +29,7 @@ See the Mulan PSL v2 for more details. */
 #include "storage/buffer/disk_buffer_pool.h"
 #include "storage/common/condition_filter.h"
 #include "storage/common/meta_util.h"
+#include "storage/index/bplus_tree.h"
 #include "storage/index/bplus_tree_index.h"
 #include "storage/index/index.h"
 #include "storage/record/record_manager.h"
@@ -95,6 +100,7 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
   db_       = db;
 
   string             data_file = table_data_file(base_dir, name);
+  LOG_ERROR("RC Table::create data file. file name=%s", data_file.data());
   BufferPoolManager &bpm       = db->buffer_pool_manager();
   rc                           = bpm.create_file(data_file.c_str());
   if (rc != RC::SUCCESS) {
@@ -126,6 +132,71 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
   LOG_INFO("Successfully create table %s:%s", base_dir, name);
   return rc;
+}
+
+RC Table::drop(const char *path)
+{
+  RC rc = RC::SUCCESS;
+
+  // 1. 删除元数据文件（*.table）
+  if (::remove(path) < 0) {
+    LOG_ERROR("Failed to delete table file. filename=%s, errmsg=%s", path, strerror(errno));
+    return RC::INTERNAL;
+  }
+
+  // 2. 初始化 engine_
+  if (table_meta_.storage_engine() == StorageEngine::HEAP) {
+    engine_ = make_unique<HeapTableEngine>(&table_meta_, db_, this);
+  } else if (table_meta_.storage_engine() == StorageEngine::LSM) {
+    engine_ = make_unique<LsmTableEngine>(&table_meta_, db_, this);
+  } else {
+    LOG_WARN("Unsupported storage engine type: %d", table_meta_.storage_engine());
+    return RC::UNSUPPORTED;
+  }
+  
+  rc = engine_->open();
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("Failed to open table engine to drop table data for table %s.", table_meta_.name());
+    // 即使打开失败，也尝试reset，以防部分资源已分配
+    if (engine_) {
+        engine_.reset();
+    }
+    return rc;
+  }
+
+  // 在删除文件前，先显式关闭并释放引擎资源 
+  if (engine_) {
+      engine_.reset(); // 这将调用 ~HeapTableEngine，它会关闭并释放其拥有的 buffer pools 和 indexes
+  }
+
+  // 3. 删除数据文件
+  string data_file = table_data_file(db_->path().c_str(), table_meta_.name());
+  LOG_INFO("Attempting to remove data file: %s for table %s", data_file.c_str(), table_meta_.name());
+  BufferPoolManager &bpm = db_->buffer_pool_manager();
+  rc = bpm.remove_file(data_file.c_str());
+  if (rc != RC::SUCCESS) {
+    // 注意：经过 engine_.reset() 后, bpm.remove_file 内部的 close_file 可能会因为找不到已关闭的 buffer pool 而返回 RC::INTERNAL。
+    // bpm.remove_file 本身应该能处理这种情况并继续尝试删除物理文件。
+    // 这里的日志和错误处理可能需要根据 bpm.remove_file 的行为调整。
+    LOG_ERROR("Failed to remove data file %s for table %s. error=%s", data_file.c_str(), table_meta_.name(), strrc(rc));
+    // return rc; // 视情况决定是否返回
+  }
+
+  auto index_num = table_meta_.index_num();
+  for (int i = 0; i < index_num; i++) {
+    // (BplusTreeIndex *) inde
+    auto index_name = table_meta_.index(i)->name();
+    string index_file = table_index_file(db_->path().c_str(), table_meta_.name(), index_name);
+    LOG_INFO("Attempting to remove index file: %s for table %s", index_file.c_str(), table_meta_.name());
+    rc = bpm.remove_file(index_file.c_str());
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to remove index file %s for table %s. error=%s", index_file.c_str(), table_meta_.name(), strrc(rc));
+      // return RC::IOERR_WRITE; // 视情况决定是否返回
+    }
+  }
+
+  LOG_INFO("Table %s dropped successfully", table_meta_.name());
+  return RC::SUCCESS;
 }
 
 RC Table::open(Db *db, const char *meta_file, const char *base_dir)
