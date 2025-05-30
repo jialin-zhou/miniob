@@ -44,6 +44,12 @@ public:
   virtual RC update_record_with_trx(const Record &old_record, const Record &new_record, Trx *trx) = 0;
   virtual RC get_record(const RID &rid, Record &record)                                           = 0;
 
+  // 返回索引集合
+  virtual const vector<Index *> &indexes() const {
+    static vector<Index *> empty;
+    return empty;  // 默认返回空索引集合，适用于 LSM 引擎
+  }
+
   virtual RC     create_index(Trx *trx, const FieldMeta *field_meta, const char *index_name) = 0;
   virtual RC     get_record_scanner(RecordScanner *&scanner, Trx *trx, ReadWriteMode mode)   = 0;
   virtual RC     get_chunk_scanner(ChunkFileScanner &scanner, Trx *trx, ReadWriteMode mode)  = 0;
