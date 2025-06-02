@@ -47,6 +47,14 @@ RC FieldExpr::get_column(Chunk &chunk, Column &column)
   return RC::SUCCESS;
 }
 
+const Table* FieldExpr::get_table() const {
+    return field_.table();
+}
+
+const FieldMeta* FieldExpr::meta() const {
+    return field_.meta();
+}
+
 bool ValueExpr::equal(const Expression &other) const
 {
   if (this == &other) {
