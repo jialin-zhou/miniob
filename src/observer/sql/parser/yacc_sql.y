@@ -512,7 +512,7 @@ select_stmt:        /*  select 语句的语法解析树*/
       }
 
       if ($7 != nullptr) { // $7 对应 opt_order_by (vector<OrderBySqlNode>*)
-        $$->selection.order_by_units.swap(*$7);
+        $$->selection.orderbys.swap(*$7);
         delete $7; // 删除临时的 vector 指针
       }
     }
