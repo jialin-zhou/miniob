@@ -38,6 +38,7 @@ enum class OpType
   LOGICALLIMIT,
   LOGICALANALYZE,
   LOGICALEXPLAIN,
+  LOGICALORDERBY,
   // Separation of logical and physical operators
   LOGICALPHYSICALDELIMITER,
 

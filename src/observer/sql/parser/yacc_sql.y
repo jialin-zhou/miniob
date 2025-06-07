@@ -114,6 +114,9 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         LE
         GE
         NE
+        ORDER
+        ASC
+
 
 /** union 中定义各种数据类型，真实生成的代码也是union类型，所以不能有非POD类型的数据 **/
 %union {
@@ -131,6 +134,8 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
   vector<RelAttrSqlNode> *                   rel_attr_list;
   vector<string> *                           relation_list;
   vector<string> *                           key_list;
+  OrderBySqlNode *                           orderby_unit;
+  vector<OrderBySqlNode> *                   orderby_unit_list;
   char *                                     cstring;
   int                                        number;
   float                                      floats;
@@ -161,6 +166,9 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %type <relation_list>       rel_list
 %type <expression>          expression
 %type <expression_list>     expression_list
+%type <orderby_unit>        sort_unit
+%type <orderby_unit_list>   sort_list
+%type <orderby_unit_list>   opt_order_by
 %type <expression_list>     group_by
 %type <sql_node>            calc_stmt
 %type <sql_node>            select_stmt
@@ -480,27 +488,32 @@ update_stmt:      /*  update 语句的语法解析树*/
     }
     ;
 select_stmt:        /*  select 语句的语法解析树*/
-    SELECT expression_list FROM rel_list where group_by
+    SELECT expression_list FROM rel_list where group_by opt_order_by
     {
       $$ = new ParsedSqlNode(SCF_SELECT);
-      if ($2 != nullptr) {
+      if ($2 != nullptr) { // expression_list
         $$->selection.expressions.swap(*$2);
         delete $2;
       }
 
-      if ($4 != nullptr) {
+      if ($4 != nullptr) { // rel_list
         $$->selection.relations.swap(*$4);
         delete $4;
       }
 
-      if ($5 != nullptr) {
+      if ($5 != nullptr) { // where (condition_list)
         $$->selection.conditions.swap(*$5);
         delete $5;
       }
 
-      if ($6 != nullptr) {
+      if ($6 != nullptr) { // group_by (expression_list)
         $$->selection.group_by.swap(*$6);
         delete $6;
+      }
+
+      if ($7 != nullptr) { // $7 对应 opt_order_by (vector<OrderBySqlNode>*)
+        $$->selection.orderbys.swap(*$7);
+        delete $7; // 删除临时的 vector 指针
       }
     }
     ;
@@ -674,6 +687,54 @@ condition:
       delete $3;
     }
     ;
+
+sort_unit:
+	expression
+	{
+    $$ = new OrderBySqlNode();//默认是升序
+    $$->expr = $1;
+    $$->is_asc = true;
+	}
+	|
+	expression DESC
+	{
+    $$ = new OrderBySqlNode();
+    $$->expr = $1;
+    $$->is_asc = false;
+	}
+	|
+	expression ASC
+	{
+    $$ = new OrderBySqlNode();//默认是升序
+    $$->expr = $1;
+    $$->is_asc = true;
+	}
+	;
+sort_list:
+	sort_unit
+	{
+    $$ = new std::vector<OrderBySqlNode>;
+    $$->emplace_back(*$1);
+    delete $1;
+	}
+  |
+	sort_unit COMMA sort_list
+	{
+    $3->emplace_back(*$1);
+    $$ = $3;
+    delete $1;
+	}
+	;
+opt_order_by:
+	/* empty */ {
+   $$ = nullptr;
+  }
+	| ORDER BY sort_list
+	{
+      $$ = $3;
+      std::reverse($$->begin(),$$->end());
+	}
+	;
 
 comp_op:
       EQ { $$ = EQUAL_TO; }

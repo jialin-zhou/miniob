@@ -213,6 +213,9 @@ public:
   const char *table_name() const { return field_.table_name(); }
   const char *field_name() const { return field_.field_name(); }
 
+  const Table* get_table() const;     // 返回指向 Table 的指针
+  const FieldMeta* meta() const;      // 返回指向 FieldMeta 的指针
+
   RC get_column(Chunk &chunk, Column &column) override;
 
   RC get_value(const Tuple &tuple, Value &value) const override;

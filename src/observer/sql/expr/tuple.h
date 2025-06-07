@@ -14,6 +14,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <memory>
+
 #include "common/log/log.h"
 #include "sql/expr/expression.h"
 #include "sql/expr/tuple_cell.h"
@@ -67,6 +69,12 @@ class Tuple
 public:
   Tuple()          = default;
   virtual ~Tuple() = default;
+
+  /**
+   * @brief 创建并返回当前元组的一个深拷贝副本
+   * @return 指向新创建的元组副本的 unique_ptr；如果拷贝失败可能返回 nullptr
+   */
+  virtual std::unique_ptr<Tuple> clone() const = 0; // 注意是 const 方法
 
   /**
    * @brief 获取元组中的Cell的个数
@@ -167,6 +175,35 @@ public:
     speces_.clear();
   }
 
+  std::unique_ptr<Tuple> clone() const override {
+    // RowTuple 的复制比较复杂，因为它依赖于外部的 Record* 和 Table*，
+    // 以及内部的 FieldExpr* 列表。
+    // 简单的深拷贝可能不适用，或者需要非常小心。
+    // 如果 Record 本身是共享的或不可变的，也许可以共享 Record*。
+    // 但 FieldExpr* 列表是 RowTuple 拥有的，需要复制。
+
+    auto cloned_row_tuple = std::make_unique<RowTuple>();
+    cloned_row_tuple->record_ = this->record_; // 共享 Record*，需要保证 Record 生命周期
+    cloned_row_tuple->table_ = this->table_;   // 共享 Table*
+    cloned_row_tuple->speces_.reserve(this->speces_.size());
+    for (const FieldExpr* spec : this->speces_) {
+      if (spec) {
+        // 现在可以使用你为 FieldExpr 添加的方法
+        const Table* table_ptr = spec->get_table();     // 调用 FieldExpr::get_table()
+        const FieldMeta* meta_ptr = spec->meta();       // 调用 FieldExpr::meta()
+        if (table_ptr && meta_ptr) {
+            cloned_row_tuple->speces_.push_back(new FieldExpr(table_ptr, meta_ptr));
+        } else {
+             LOG_WARN("RowTuple::clone 失败: FieldExpr 或其元数据无效");
+             // 清理已分配的 FieldExpr*
+             for(FieldExpr* fe : cloned_row_tuple->speces_) delete fe;
+             return nullptr;
+        }
+      }
+    }
+    return cloned_row_tuple;
+  }
+
   void set_record(Record *record) { this->record_ = record; }
 
   void set_schema(const Table *table, const vector<FieldMeta> *fields)
@@ -259,6 +296,24 @@ class ProjectTuple : public Tuple
 public:
   ProjectTuple()          = default;
   virtual ~ProjectTuple() = default;
+  
+  std::unique_ptr<Tuple> clone() const override{
+    auto cloned_project_tuple = std::make_unique<ProjectTuple>();
+    // expressions_ 是 unique_ptr<Expression> 的 vector，需要深拷贝 Expression 对象
+    cloned_project_tuple->expressions_.reserve(this->expressions_.size());
+    for (const auto& expr : this->expressions_) {
+        if (expr) {
+            cloned_project_tuple->expressions_.push_back(expr->copy()); // 假设 Expression 有 copy()
+        } else {
+            cloned_project_tuple->expressions_.push_back(nullptr);
+        }
+    }
+    // tuple_ 是 Tuple*，通常 ProjectTuple 并不拥有它，而是引用它。
+    // 克隆的 ProjectTuple 也应该引用同一个底层 tuple_，或者其克隆版本（如果需要完全解耦）
+    // 这里假设 ProjectTuple 只是包装，不拥有 tuple_。
+    cloned_project_tuple->tuple_ = this->tuple_;
+    return cloned_project_tuple;
+  }
 
   void set_expressions(vector<unique_ptr<Expression>> &&expressions) { expressions_ = std::move(expressions); }
 
@@ -314,6 +369,14 @@ class ValueListTuple : public Tuple
 public:
   ValueListTuple()          = default;
   virtual ~ValueListTuple() = default;
+
+  std::unique_ptr<Tuple> clone() const override {
+    auto cloned_vlt = std::make_unique<ValueListTuple>();
+    // Value 的拷贝构造函数会处理深拷贝（特别是对 CHARS 类型）
+    cloned_vlt->cells_ = this->cells_;
+    cloned_vlt->specs_ = this->specs_; // TupleCellSpec 通常是简单结构体，可以直接拷贝
+    return cloned_vlt;
+  }
 
   void set_names(const vector<TupleCellSpec> &specs) { specs_ = specs; }
   void set_cells(const vector<Value> &cells) { cells_ = cells; }
@@ -392,6 +455,22 @@ class JoinedTuple : public Tuple
 public:
   JoinedTuple()          = default;
   virtual ~JoinedTuple() = default;
+
+  std::unique_ptr<Tuple> clone() const override {
+    if (!left_ || !right_) {
+        LOG_WARN("JoinedTuple::clone 失败: left_ 或 right_ 指针为空");
+        return nullptr;
+    }
+    auto cloned_joined_tuple = std::make_unique<JoinedTuple>();
+    // JoinedTuple 通常不拥有 left_ 和 right_，而是引用它们。
+    // 克隆版本也应该引用相同的底层元组。
+    // 如果需要完全独立的副本，那么 left_ 和 right_ 也需要被 clone，
+    // 这会导致递归克隆，需要非常小心。
+    // 这里假设 JoinedTuple 只是一个视图，不拥有其子元组。
+    cloned_joined_tuple->left_ = this->left_;
+    cloned_joined_tuple->right_ = this->right_;
+    return cloned_joined_tuple;
+  }
 
   void set_left(Tuple *left) { left_ = left; }
   void set_right(Tuple *right) { right_ = right; }

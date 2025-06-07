@@ -100,6 +100,16 @@ public:
   int      length() const { return length_; }
   AttrType attr_type() const { return attr_type_; }
 
+  /**
+   * @brief 判断当前 Value 是否表示 SQL NULL
+   * @details 如果属性类型是 UNDEFINED，则认为其表示 NULL。
+   * 注意：这与空字符串 (empty string) 不同，空字符串有 AttrType::CHARS 类型但长度为0。
+   * @return 如果表示 NULL 返回 true，否则返回 false。
+   */
+  bool is_null() const {
+    return attr_type_ == AttrType::UNDEFINED;
+  }
+
 public:
   /**
    * 获取对应的值

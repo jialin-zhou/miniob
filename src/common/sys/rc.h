@@ -51,6 +51,7 @@ See the Mulan PSL v2 for more details. */
   DEFINE_RC(SCHEMA_FIELD_MISSING)        \
   DEFINE_RC(SCHEMA_FIELD_TYPE_MISMATCH)  \
   DEFINE_RC(SCHEMA_INDEX_NAME_REPEAT)    \
+  DEFINE_RC(SCHEMA_CANNOT_GET)           \
   DEFINE_RC(IOERR_READ)                  \
   DEFINE_RC(IOERR_WRITE)                 \
   DEFINE_RC(IOERR_ACCESS)                \
@@ -85,7 +86,11 @@ See the Mulan PSL v2 for more details. */
   DEFINE_RC(INVALID_TOKEN)               \
   DEFINE_RC(UNEXPECTED_END_OF_STRING)    \
   DEFINE_RC(SYNTAX_ERROR)                \
-  DEFINE_RC(UNSUPPORTED)
+  DEFINE_RC(UNSUPPORTED)                 \
+  DEFINE_RC(OPERATOR_NULL_PTR)           \
+  DEFINE_RC(OPERATOR_FAILED_CLONE)       \
+  DEFINE_RC(OPERATOR_NOT_OPENNED)        \
+  DEFINE_RC(NO_MORE_TUPLE)               \
 
 enum class RC
 {
