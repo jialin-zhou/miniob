@@ -76,4 +76,27 @@ public:
 private:
 };
 
+/**
+ * @class LeveledCompactionPicker
+ * @brief A class implementing the leveled compaction strategy.
+ *
+ */
+class LeveledCompactionPicker : public ObCompactionPicker
+{
+public:
+  /**
+   * @param options Pointer to the LSM-Tree options configuration.
+   */
+  LeveledCompactionPicker(ObLsmOptions *options) : ObCompactionPicker(options) {}
+
+  ~LeveledCompactionPicker() = default;
+
+  /**
+   * @brief Implementation of the pick method for leveled compaction.
+   */
+  unique_ptr<ObCompaction> pick(SSTablesPtr sstables) override;
+
+private:
+};
+
 }  // namespace oceanbase
