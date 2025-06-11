@@ -97,64 +97,100 @@ unique_ptr<ObCompaction> LeveledCompactionPicker::pick(SSTablesPtr sstables)
     if (!sstables || sstables->empty()) {
         return nullptr;
     }
-    // --- 1. 检查 L0 -> L1 的合并 ---
+
+    double max_score = 0.0;
+    int best_level = -1;
+
+    // --- 1. 计算 L0 的分数 ---
     const auto& level0_files = (*sstables)[0];
     if (level0_files.size() >= options_->default_l0_file_num) {
-        unique_ptr<ObCompaction> compaction(new ObCompaction(0)); // L0的合并
-        
-        // input[0] 是 L0 的所有文件
-        compaction->inputs_[0] = level0_files;
-
-        // input[1] 是 L1 中与 L0 文件有重叠的所有文件
-        if (sstables->size() > 1) {
-            const auto& level1_files = (*sstables)[1];
-            for (const auto& l1_sst : level1_files) {
-                for (const auto& l0_sst : level0_files) {
-                    if (DoRangesOverlap(l0_sst, l1_sst)) {
-                        compaction->inputs_[1].emplace_back(l1_sst);
-                        break; // 找到重叠后，这个l1_sst已加入，检查下一个l1_sst
-                    }
-                }
-            }
-        }
-        return compaction;
+        max_score = static_cast<double>(level0_files.size()) / options_->default_l0_file_num;
+        best_level = 0;
     }
 
-    // --- 2. 检查 Li -> L(i+1) 的合并 (i >= 1) ---
-    for (size_t i = 1; i < sstables->size() - 1; ++i) {
+    // --- 2. 计算 Li (i >= 1) 的分数 ---
+    for (size_t i = 1; i < sstables->size(); ++i) {
         const auto& current_level_files = (*sstables)[i];
         if (current_level_files.empty()) {
-            continue; // 当前层没有文件，跳过
+            continue;
         }
-        
-        // 计算当前层的总大小
+
         uint64_t current_level_size = 0;
         for (const auto& sst : current_level_files) {
             current_level_size += sst->size();
         }
-        
-        // 计算当前层的大小阈值
-        uint64_t level_size_limit = options_->default_l1_level_size * std::pow(options_->default_level_ratio, i - 1);
+
+        uint64_t level_size_limit = (i == 0) ? options_->default_l1_level_size 
+                                             : options_->default_l1_level_size * static_cast<uint64_t>(std::pow(options_->default_level_ratio, i - 1)); // Cast pow result
 
         if (current_level_size > level_size_limit) {
-            // 触发合并，选择当前层的第一个文件作为源
-            // 更优的策略是选择修改最少或最老的文件，这里简化为第一个
-            shared_ptr<ObSSTable> source_sst = current_level_files[0];
-            
-            unique_ptr<ObCompaction> compaction(new ObCompaction(i));
-            compaction->inputs_[0].emplace_back(source_sst);
-
-            // 找出下一层 (i+1) 中所有与 source_sst 重叠的文件
-            const auto& next_level_files = (*sstables)[i + 1];
-            for (const auto& next_sst : next_level_files) {
-                if (DoRangesOverlap(source_sst, next_sst)) {
-                    compaction->inputs_[1].emplace_back(next_sst);
-                }
+            double current_score = static_cast<double>(current_level_size) / level_size_limit;
+            if (current_score > max_score) {
+                max_score = current_score;
+                best_level = i;
             }
-            return compaction;
         }
     }
-    return nullptr;
+    
+    // --- 3. 如果没有需要合并的层级，直接返回 ---
+    if (best_level == -1) {
+        return nullptr;
+    }
+
+    // --- 4. 根据分数最高的 best_level 构建合并任务 ---
+    unique_ptr<ObCompaction> compaction(new ObCompaction(best_level));
+    if (best_level == 0) {
+        // 构建 L0 -> L1 的合并任务
+        compaction->inputs_[0] = (*sstables)[0]; // All L0 files
+
+        if (!compaction->inputs_[0].empty() && sstables->size() > 1) { // If L0 is not empty and L1 exists
+            // Determine the overall key range for L0 files
+            std::string min_l0_key = compaction->inputs_[0][0]->first_key();
+            std::string max_l0_key = compaction->inputs_[0][0]->last_key();
+            // ObDefaultComparator key_cmp; // Not needed for direct string comparison here
+
+            for (size_t i = 1; i < compaction->inputs_[0].size(); ++i) {
+                const auto& l0_sst = compaction->inputs_[0][i];
+                if (l0_sst->first_key() < min_l0_key) {
+                    min_l0_key = l0_sst->first_key();
+                }
+                if (l0_sst->last_key() > max_l0_key) {
+                    max_l0_key = l0_sst->last_key();
+                }
+            }
+
+            const auto& level1_files = (*sstables)[1];
+            for (const auto& l1_sst : level1_files) {
+                // Check if l1_sst overlaps with the combined range [min_l0_key, max_l0_key]
+                // Overlap condition: !(l1_sst.last < min_l0_key || l1_sst.first > max_l0_key)
+                if (!(l1_sst->last_key() < min_l0_key || l1_sst->first_key() > max_l0_key)) {
+                    compaction->inputs_[1].emplace_back(l1_sst);
+                }
+            }
+        }
+    } else { // best_level > 0,  Li -> L(i+1)
+        // Ensure best_level is valid and has files
+        if (static_cast<size_t>(best_level) < sstables->size() && !(*sstables)[best_level].empty()) {
+            shared_ptr<ObSSTable> source_sst = (*sstables)[best_level][0]; 
+            compaction->inputs_[0].emplace_back(source_sst);
+            
+            size_t next_level_idx = static_cast<size_t>(best_level + 1);
+            if (next_level_idx < sstables->size()) {
+               const auto& next_level_files = (*sstables)[next_level_idx];
+                for (const auto& next_sst : next_level_files) {
+                    if (DoRangesOverlap(source_sst, next_sst)) {
+                        compaction->inputs_[1].emplace_back(next_sst);
+                    }
+                }
+            }
+        } else {
+            // This case implies an issue with level selection or state
+            LOG_WARN("LeveledCompactionPicker: best_level %d is invalid or empty for Li->L(i+1) compaction.", best_level);
+            return nullptr; 
+        }
+    }
+
+    return compaction;
 }
 
 ObCompactionPicker *ObCompactionPicker::create(CompactionType type, ObLsmOptions *options)
