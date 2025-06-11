@@ -80,7 +80,7 @@ private:
     std::pair<Node*, bool> get_next(int level)
     {
         // LOG_INFO("Node::get_next: this=%p, level=%d, current_node_height=%d", static_cast<void*>(this), level, height_);
-        printf("Node::get_next: this=%p, level=%d, current_node_height=%d\n", static_cast<void*>(this), level, height_);
+        // printf("Node::get_next: this=%p, level=%d, current_node_height=%d\n", static_cast<void*>(this), level, height_);
         ASSERT(level >= 0 && level < height_, "level out of bounds in get_next");
         uintptr_t val = next_[level].load(std::memory_order_acquire);
         return {get_ptr_from_uintptr(val), get_mark_from_uintptr(val)};
@@ -645,8 +645,8 @@ retry_find:
 template <typename Key, class ObComparator>
 typename ObSkipList<Key, ObComparator>::Node *ObSkipList<Key, ObComparator>::new_node(const Key &key, int height)
 {
-   // LOG_INFO("new_node: creating node with key=%lu, height=%d", static_cast<unsigned long>(key), height);
-   printf("new_node: creating node with key_addr=%p, height=%d\n", static_cast<const void*>(&key), height); // Print address of key
+    // LOG_INFO("new_node: creating node with key=%lu, height=%d", static_cast<unsigned long>(key), height);
+    // printf("new_node: creating node with key_addr=%p, height=%d\n", static_cast<const void*>(&key), height); // Print address of key
     assert(height > 0 && height <= kMaxHeight);
     size_t node_obj_size = sizeof(Node);
     // Calculate size for the flexible array member part (next_)

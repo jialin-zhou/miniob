@@ -22,8 +22,7 @@ namespace oceanbase {
 // 初始化 SSTable，从文件中加载 footer 和 block meta 信息
 void ObSSTable::init()
 {
-  printf("[init] 加载 SSTable 文件: %s\n", file_name_.c_str());
-
+  // printf("[init] 加载 SSTable 文件: %s\n", file_name_.c_str());
   file_reader_ = make_unique<ObFileReader>(file_name_);
   file_reader_->open_file();
 
@@ -70,8 +69,7 @@ void ObSSTable::init()
 
     block_metas_.push_back(block_meta);
   }
-
-  printf("[init] 成功加载 %zu 个 block metas\n", block_metas_.size());
+  // printf("[init] 成功加载 %zu 个 block metas\n", block_metas_.size());
 }
 
 // 从缓存或文件中读取指定的 Block
