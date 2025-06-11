@@ -91,6 +91,7 @@ See the Mulan PSL v2 for more details. */
   DEFINE_RC(OPERATOR_FAILED_CLONE)       \
   DEFINE_RC(OPERATOR_NOT_OPENNED)        \
   DEFINE_RC(NO_MORE_TUPLE)               \
+  DEFINE_RC(CORRUPTED_DATA)              \
 
 enum class RC
 {
