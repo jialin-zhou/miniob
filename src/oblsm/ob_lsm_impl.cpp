@@ -24,12 +24,25 @@ See the Mulan PSL v2 for more details. */
 #include "oblsm/ob_user_iterator.h"
 #include "oblsm/compaction/ob_compaction.h"
 #include "oblsm/ob_lsm_define.h"
+#include "oblsm/table/ob_merger.h"
+#include <cstdio>
 
 namespace oceanbase {
 ObLsmImpl::ObLsmImpl(const ObLsmOptions &options, const string &path)
     : options_(options), path_(path), mu_(), mem_table_(nullptr), imem_tables_(), manifest_(path)
 {
-  mem_table_ = make_shared<ObMemTable>();
+    printf("ObLsmImpl::ObLsmImpl, path=%s\n", path.c_str());
+    std::filesystem::create_directory(path_);
+    mem_table_ = make_shared<ObMemTable>();
+    wal_ = make_shared<WAL>();
+    uint64_t initial_memtable_id = memtable_id_.fetch_add(1); // 原子地获取一个唯一的ID
+
+    RC rc = wal_->open(get_wal_path(initial_memtable_id));    // 使用辅助函数获取路径并打开文件
+    if (rc != RC::SUCCESS) {
+        // 这是一个致命错误，数据库无法在没有WAL的情况下工作。
+        LOG_ERROR("FATAL: Failed to open initial WAL file, rc=%d. Database cannot start.", rc);
+        // 在生产系统中，这里可能需要抛出异常或采取其他错误处理措施。
+    }
   sstables_  = make_shared<vector<vector<shared_ptr<ObSSTable>>>>();
   if (options_.type == CompactionType::LEVELED) {
     sstables_->resize(options_.default_levels);
@@ -259,6 +272,59 @@ void ObLsmImpl::try_major_compaction()
     }
   } else if (options_.type == CompactionType::LEVELED) {
     // TODO: apply the compaction results to sstable
+
+    // Apply the compaction results to sstables
+    // results contains new SSTables for picked->level() + 1
+    // picked->inputs(0) are from picked->level() (to be removed)
+    // picked->inputs(1) are from picked->level() + 1 (to be removed)
+
+    SSTablesPtr temp_sstables = make_shared<vector<vector<shared_ptr<ObSSTable>>>>(*sstables_);
+    int compaction_level = picked->level();
+    int target_level = compaction_level + 1;
+
+    // Ensure enough levels exist in temp_sstables
+    if (static_cast<size_t>(target_level) >= temp_sstables->size()) {
+        temp_sstables->resize(target_level + 1);
+    }
+
+    // Remove inputs from compaction_level (L_i)
+    if (static_cast<size_t>(compaction_level) < temp_sstables->size()) {
+        auto& level_i_ssts = (*temp_sstables)[compaction_level];
+        level_i_ssts.erase(
+            std::remove_if(level_i_ssts.begin(), level_i_ssts.end(),
+                           [&](const shared_ptr<ObSSTable>& sst) {
+                               for (const auto& p_sst : picked->inputs(0)) {
+                                   if (sst->sst_id() == p_sst->sst_id()) return true;
+                               }
+                               return false;
+                           }),
+            level_i_ssts.end());
+    }
+
+    // Remove inputs from target_level (L_i+1)
+    auto& level_i_plus_1_ssts = (*temp_sstables)[target_level];
+    level_i_plus_1_ssts.erase(
+        std::remove_if(level_i_plus_1_ssts.begin(), level_i_plus_1_ssts.end(),
+                       [&](const shared_ptr<ObSSTable>& sst) {
+                           for (const auto& p_sst : picked->inputs(1)) {
+                               if (sst->sst_id() == p_sst->sst_id()) return true;
+                           }
+                           return false;
+                       }),
+        level_i_plus_1_ssts.end());
+    
+    // Add results to target_level (L_i+1)
+    level_i_plus_1_ssts.insert(level_i_plus_1_ssts.end(), results.begin(), results.end());
+
+    // Sort target_level (L_i+1) by first key
+    if (!level_i_plus_1_ssts.empty()) {
+        std::sort(level_i_plus_1_ssts.begin(), level_i_plus_1_ssts.end(),
+                  [](const shared_ptr<ObSSTable>& a, const shared_ptr<ObSSTable>& b) {
+                      return a->first_key() < b->first_key();
+                  });
+    }
+    // Assign the modified structure to new_sstables (which is the outer scope variable)
+    *new_sstables = *temp_sstables;
   }
 
   sstables_ = new_sstables;
@@ -275,29 +341,126 @@ void ObLsmImpl::try_major_compaction()
   try_major_compaction();
 }
 
-vector<shared_ptr<ObSSTable>> ObLsmImpl::do_compaction(ObCompaction *picked) { return {}; }
+vector<shared_ptr<ObSSTable>> ObLsmImpl::do_compaction(ObCompaction *picked) { 
+  if (picked == nullptr || picked->size() == 0) {
+    return {};
+  }
+
+  vector<shared_ptr<ObSSTable>> result_sstables;
+  vector<unique_ptr<ObLsmIterator>> iterators;
+
+  // Collect iterators for level_ inputs (inputs(0))
+  for (const auto &sstable : picked->inputs(0)) {
+    if (sstable) {
+      iterators.emplace_back(sstable->new_iterator());
+    }
+  }
+  // Collect iterators for level_+1 inputs (inputs(1))
+  for (const auto &sstable : picked->inputs(1)) {
+    if (sstable) {
+      iterators.emplace_back(sstable->new_iterator());
+    }
+  }
+
+  if (iterators.empty()) {
+    return {};
+  }
+
+  // ObMerger merger(iterators, &internal_key_comparator_);
+  // merger.seek_to_first();
+  unique_ptr<ObLsmIterator> merger_iter(new_merging_iterator(&internal_key_comparator_, std::move(iterators)));
+  if (!merger_iter) { // Handle case where new_merging_iterator returns nullptr (e.g., no valid children)
+    return {};
+  }
+  merger_iter->seek_to_first();
+
+  shared_ptr<ObMemTable> current_mem_table = make_shared<ObMemTable>();
+
+  while (merger_iter->valid()) {
+    string_view internal_key_from_merger = merger_iter->key();
+    string_view user_value = merger_iter->value();
+
+    // 校验 internal_key_from_merger 的大小是否至少为 SEQ_SIZE
+    // SEQ_SIZE 应该在 oblsm/ob_lsm_define.h 中定义，通常是 sizeof(uint64_t)
+    if (internal_key_from_merger.size() < SEQ_SIZE) {
+      LOG_ERROR("Corrupted internal key from merger: size %zu is less than SEQ_SIZE %zu. Skipping record.",
+                internal_key_from_merger.size(), static_cast<size_t>(SEQ_SIZE));
+      merger_iter->next();
+      continue; // 跳过这条损坏的记录
+    }
+
+    // Parse internal key to get user key and sequence number
+    string_view user_key_part = extract_user_key(internal_key_from_merger);
+    // Assuming sequence number is the last SEQ_SIZE bytes of the internal key
+    uint64_t sequence_num = get_numeric<uint64_t>(internal_key_from_merger.data() + internal_key_from_merger.size() - SEQ_SIZE);
+
+    // 可选：进一步校验 user_key_part 和 user_value 的大小是否在合理范围内
+    // const size_t MAX_REASONABLE_KEY_SIZE = 1 * 1024 * 1024; // 例如 1MB
+    // const size_t MAX_REASONABLE_VALUE_SIZE = 16 * 1024 * 1024; // 例如 16MB
+    // if (user_key_part.size() > MAX_REASONABLE_KEY_SIZE || user_value.size() > MAX_REASONABLE_VALUE_SIZE) {
+    //   LOG_ERROR("Corrupted key/value size from merger. User key size: %zu, Value size: %zu. Skipping record.",
+    //             user_key_part.size(), user_value.size());
+    //   merger_iter->next();
+    //   continue;
+    // }
+
+    current_mem_table->put(sequence_num, user_key_part, user_value);
+    merger_iter->next();
+
+    // Check if current memtable exceeds size limit, or if it's the last key from merger
+    if (current_mem_table->appro_memory_usage() >= options_.table_size || !merger_iter->valid()) {
+      if (current_mem_table->appro_memory_usage() > 0) { // Or check num_entries()
+        unique_ptr<ObSSTableBuilder> tb =
+            make_unique<ObSSTableBuilder>(&default_comparator_, block_cache_.get());
+        uint64_t new_sstable_id = sstable_id_.fetch_add(1);
+        // ObSSTableBuilder::build takes a shared_ptr<ObMemTable>
+        tb->build(current_mem_table, get_sstable_path(new_sstable_id), new_sstable_id);
+        shared_ptr<ObSSTable> new_table = tb->get_built_table();
+        if (new_table && new_table->size() > 0) {
+            result_sstables.push_back(new_table);
+        }
+
+        if (merger_iter->valid()) { // If there's more data to process for a new SSTable
+          current_mem_table = make_shared<ObMemTable>();
+        }
+        // If !merger_iter->valid(), current_mem_table has been processed, and loop will terminate.
+      }
+    }
+  }
+  return result_sstables;
+}
 
 void ObLsmImpl::build_sstable(shared_ptr<ObMemTable> imem)
 {
   unique_ptr<ObSSTableBuilder> tb = make_unique<ObSSTableBuilder>(&default_comparator_, block_cache_.get());
 
-  uint64_t sstable_id = sstable_id_.fetch_add(1);
-  tb->build(imem, get_sstable_path(sstable_id), sstable_id);
-  // unique_lock<mutex> lock(mu_);
+  uint64_t sstable_id_for_this_table = sstable_id_.fetch_add(1); // Atomically get and increment for the new SSTable
+  tb->build(imem, get_sstable_path(sstable_id_for_this_table), sstable_id_for_this_table);
+  shared_ptr<ObSSTable> built_table = tb->get_built_table();
 
-  ObManifestCompaction record;
-  record.compaction_type     = options_.type;
-  record.sstable_sequence_id = sstable_id_.load();
+  if (!built_table || built_table->size() == 0) {
+    LOG_WARN("SSTable (id: %lu) built from memtable is empty or null. It will not be added to the LSM tree or manifest. Associated WAL may need cleanup if this path is taken frequently.", sstable_id_for_this_table);
+    // The sstable_id_ counter has already been incremented. This will result in a gap in SSTable IDs, which is generally acceptable.
+    // Optionally, you could attempt to remove the physical file if it was created:
+    // ::remove(get_sstable_path(sstable_id_for_this_table).c_str());
+    return; // Do not proceed to add this empty table or record it in the manifest
+  }
+
+  // If the table is valid and has data, proceed to add it to sstables_ and update the manifest.
+  ObManifestCompaction record; // Used for LEVELED type manifest update
+  record.compaction_type     = options_.type; // Note: Using ObManifestCompaction for a flush event.
+  // sstable_sequence_id in manifest usually tracks the highest sstable_id after an operation.
+  // sstable_id_.load() will give the next available ID.
+  record.sstable_sequence_id = sstable_id_.load(); 
   record.seq_id              = manifest_.latest_seq;
 
-  // TODO: unify the build sstable logic in all compaction type
   if (options_.type == CompactionType::TIRED) {
-    // TODO: record the changes for tired compaction
-    // here we use `level_i` to store `run_i`
-    sstables_->insert(sstables_->begin(), {tb->get_built_table()});
+    sstables_->insert(sstables_->begin(), {built_table});
+    // For TIRED compaction, manifest updates for new L0 tables might be handled differently or not here.
+    // The current code does not push a manifest record for TIRED in this specific path.
   } else if (options_.type == CompactionType::LEVELED) {
-    sstables_->at(0).emplace_back(tb->get_built_table());
-    record.added_tables.emplace_back(sstable_id, 0);
+    sstables_->at(0).emplace_back(built_table);
+    record.added_tables.emplace_back(sstable_id_for_this_table, 0); // Record the actual ID of the table added to level 0
     manifest_.push(std::move(record));
   }
 }

@@ -22,8 +22,7 @@ namespace oceanbase {
 // 初始化 SSTable，从文件中加载 footer 和 block meta 信息
 void ObSSTable::init()
 {
-  printf("[init] 加载 SSTable 文件: %s\n", file_name_.c_str());
-
+  // printf("[init] 加载 SSTable 文件: %s\n", file_name_.c_str());
   file_reader_ = make_unique<ObFileReader>(file_name_);
   file_reader_->open_file();
 
@@ -67,11 +66,21 @@ void ObSSTable::init()
       printf("[init] 错误：解析 block meta 失败 (index=%u)\n", i);
       return;
     }
-
+    // --- 开始添加打印 ---
+    // printf("[Init Debug] Decoded Meta #%u: first_key_size=%zu, last_key_size=%zu, offset=%u, block_size=%u\n",
+    //        i,
+    //        block_meta.first_key_.size(),
+    //        block_meta.last_key_.size(),
+    //        block_meta.offset_,
+    //        block_meta.size_);
     block_metas_.push_back(block_meta);
+    // 这会创建一个全新的、数据完全独立的 BlockMeta 对象并存入向量
+    // block_metas_.emplace_back(block_meta.first_key_,
+    //                             block_meta.last_key_,
+    //                             block_meta.offset_,
+    //                             block_meta.size_);
   }
-
-  printf("[init] 成功加载 %zu 个 block metas\n", block_metas_.size());
+  // printf("[init] 成功加载 %zu 个 block metas\n", block_metas_.size());
 }
 
 // 从缓存或文件中读取指定的 Block
@@ -170,11 +179,21 @@ void TableIterator::next()
 // 根据 lookup_key 定位到对应的 block 并初始化迭代器
 void TableIterator::seek(const string_view &lookup_key)
 {
-  uint32_t left = 0;
-  uint32_t right = block_cnt_ - 1;
+  // 增加对空 sstable 的处理，防止无符号整数下溢和数组越界
+  if (block_cnt_ == 0) {
+    block_iterator_ = nullptr;
+    return;
+  }
+  int32_t left = 0;
+  int32_t right = block_cnt_ - 1;
+  // printf("[Seek Debug] Entering seek for sstable. block_cnt_ = %u\n", block_cnt_);
   while (left <= right) {
-    uint32_t mid = left + (right - left) / 2;
+    int32_t mid = left + (right - left) / 2;
+    // printf("[Seek Debug] Loop: left=%u, right=%u, mid=%u\n", left, right, mid);
     const auto &block_meta = sst_->block_meta(mid);
+    // printf("[Seek Debug] About to use block_meta at index %u. last_key.size() = %zu\n",
+    //        mid,
+    //        block_meta.last_key_.size());
     if (sst_->comparator()->compare(
           extract_user_key(block_meta.last_key_),
           extract_user_key_from_lookup_key(lookup_key)) >= 0) {
@@ -184,7 +203,7 @@ void TableIterator::seek(const string_view &lookup_key)
     }
   }
 
-  if (left == block_cnt_) {
+  if (static_cast<uint32_t>(left) == block_cnt_) {
     block_iterator_ = nullptr;
     return;
   }

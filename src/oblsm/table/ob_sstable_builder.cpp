@@ -24,7 +24,7 @@ namespace oceanbase {
 // 构建 SSTable 文件
 RC ObSSTableBuilder::build(shared_ptr<ObMemTable> mem_table, const std::string &file_name, uint32_t sst_id)
 {
-  printf("[Build] 开始构建 SSTable 文件: %s, sst_id=%u\n", file_name.c_str(), sst_id);
+  // printf("[Build] 开始构建 SSTable 文件: %s, sst_id=%u\n", file_name.c_str(), sst_id);
   sst_id_ = sst_id;
 
   // 删除旧文件，防止残留数据
@@ -58,24 +58,38 @@ RC ObSSTableBuilder::build(shared_ptr<ObMemTable> mem_table, const std::string &
 
   RC rc = RC::SUCCESS;
   for (; iter->valid(); iter->next()) {
-    string_view current_key = iter->key();
+    string_view current_internal_key = iter->key(); // iter->key() IS the internal_key
     string_view current_value = iter->value();
 
-    if (block_builder_.appro_size() == 0) {
-      curr_blk_first_key_.assign(extract_user_key(current_key).data(), extract_user_key(current_key).length());
+    // 校验 internal_key 的大小
+    if (current_internal_key.size() < SEQ_SIZE) {
+        LOG_ERROR("ObSSTableBuilder: Corrupted internal key from memtable iterator: size %zu is less than SEQ_SIZE %zu. SST ID: %u. Skipping record.",
+                  current_internal_key.size(), static_cast<size_t>(SEQ_SIZE), sst_id_);
+        // Or return an error to stop SSTable creation if data is too corrupted
+        return RC::CORRUPTED_DATA;
     }
 
-    rc = block_builder_.add(extract_user_key(current_key), current_value);
+    string_view user_key_for_first_key = extract_user_key(current_internal_key);
+
+    if (block_builder_.appro_size() == 0) {
+      // curr_blk_first_key_ 存储的是 user_key
+      curr_blk_first_key_.assign(user_key_for_first_key.data(), user_key_for_first_key.length());
+    }
+
+    // Pass the full internal_key to block_builder_.add
+    rc = block_builder_.add(current_internal_key, current_value);
     if (rc == RC::FULL) {
-      finish_build_block();
-      curr_blk_first_key_.assign(extract_user_key(current_key).data(), extract_user_key(current_key).length());
-      rc = block_builder_.add(extract_user_key(current_key), current_value);
+      finish_build_block(); // last_key in finish_build_block will be based on the last internal_key added
+      // curr_blk_first_key_ for the new block
+      curr_blk_first_key_.assign(user_key_for_first_key.data(), user_key_for_first_key.length());
+      // Add the current entry to the new block
+      rc = block_builder_.add(current_internal_key, current_value);
       if (rc != RC::SUCCESS) {
-        LOG_ERROR("Block已满后插入失败. Key: %s, RC: %d", string(extract_user_key(current_key)).c_str(), rc);
+        LOG_ERROR("Block已满后插入失败. InternalKey: %.*s, RC: %d", static_cast<int>(current_internal_key.size()), current_internal_key.data(), rc);
         return rc;
       }
     } else if (rc != RC::SUCCESS) {
-      LOG_ERROR("添加Entry失败. Key: %s, RC: %d", string(extract_user_key(current_key)).c_str(), rc);
+      LOG_ERROR("添加Entry失败. InternalKey: %.*s, RC: %d", static_cast<int>(current_internal_key.size()), current_internal_key.data(), rc);
       return rc;
     }
   }
@@ -125,12 +139,14 @@ void ObSSTableBuilder::write_metadata()
 // 写入一个完整的 block 数据和 padding
 void ObSSTableBuilder::finish_build_block()
 {
-  string last_key = block_builder_.last_key();
+  string internal_last_key = block_builder_.last_key();
+  // Ensure last_key in BlockMeta is a user_key for consistency
+  string user_last_key = string(extract_user_key(internal_last_key)); 
   string_view block_contents = block_builder_.finish();
   uint32_t block_size = block_contents.size();
 
   file_writer_->write(block_contents);
-  block_metas_.push_back(BlockMeta(curr_blk_first_key_, last_key, curr_offset_, block_size));
+  block_metas_.push_back(BlockMeta(curr_blk_first_key_, user_last_key, curr_offset_, block_size));
   curr_offset_ += block_size;
 
   // 添加 padding 以对齐
