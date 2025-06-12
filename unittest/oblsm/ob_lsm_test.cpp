@@ -23,7 +23,8 @@ class ObLsmTest : public ObLsmTestBase {
 };
 
 // TODO: add update/delete case
-TEST_P(ObLsmTest, DISABLED_oblsm_test_basic1)
+// TEST_P(ObLsmTest, DISABLED_oblsm_test_basic1)
+TEST_P(ObLsmTest, oblsm_test_basic1)
 {
   size_t num_entries = GetParam();
   auto data = KeyValueGenerator::generate_data(num_entries);
@@ -67,7 +68,8 @@ void thread_put(ObLsm *db, int start, int end) {
   }
 }
 
-TEST_P(ObLsmTest, DISABLED_ConcurrentPutAndGetTest) {
+// TEST_P(ObLsmTest, DISABLED_ConcurrentPutAndGetTest) {
+TEST_P(ObLsmTest, ConcurrentPutAndGetTest) {
   const int num_entries = GetParam();
   const int num_threads = 4;
   const int batch_size = num_entries / num_threads;
@@ -104,7 +106,8 @@ TEST_P(ObLsmTest, DISABLED_ConcurrentPutAndGetTest) {
   delete iterator;
 }
 
-TEST_P(ObLsmTest, DISABLED_ConcurrentPutAndRecoverTest) {
+// TEST_P(ObLsmTest, DISABLED_ConcurrentPutAndRecoverTest) {
+TEST_P(ObLsmTest, ConcurrentPutAndRecoverTest) {
   const int num_entries = GetParam();
   const int num_threads = 4;
   const int batch_size = num_entries / num_threads;
